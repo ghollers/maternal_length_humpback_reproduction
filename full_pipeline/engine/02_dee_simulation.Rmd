@@ -1,0 +1,332 @@
+---
+title: "02 - Thrust-power & daily-energy simulation"
+output: html_document
+---
+
+<!-- Oscillating-foil thrust/metabolic-power functions, growth/volume/mass functions, simulate_daily_energy(), the main Monte Carlo run, and saves results.rds / full_table.rds. -->
+
+> **Module of the maternal-energetics analysis.** Oscillating-foil thrust/metabolic-power functions, growth/volume/mass functions, simulate_daily_energy(), the main Monte Carlo run, and saves results.rds / full_table.rds.  
+> Run modules in order (00, 01, 02, 03, 05, 06); each assumes the previous ones have run (objects/functions in the environment) or loads the provided derived data from `data/` via module 00.
+
+2. SIMULATIONS
+  now i have all the components of the thrust power equation tied to empirical data 
+  and can predict the mass of a calf based on its age and maternal length (van Aswegen et al., age-specific growth costs)
+  and the mass of a mother based on its length (van Aswegen et al., age-specific growth costs) to get BMR
+  and I know the number of fluke strokes per minute during rest dives and other behavior for mothers and calves 
+
+  2a. simulate functions for the thrust power (J/s) of a tailbeat given behav state (rest v. other) age class (mothers v calf)   and Body length
+  using the model outputs from empirical data 
+```{r paths, include=FALSE}
+proj_dir <- if (requireNamespace("here", quietly = TRUE)) here::here() else getwd()  # package root (folder containing R/ and data/)
+rds_dir  <- file.path(proj_dir, "data", "processed")   # reviewer_package processed data
+knitr::opts_knit$set(root.dir = proj_dir)
+source(file.path(proj_dir, "full_pipeline", "engine", "energetics_functions.R"))
+```
+
+```{r}
+library(readxl)
+
+library(readxl)
+library(dplyr)
+
+# --- Load YatesCT ---
+YatesCT <- read.csv(file.path(rds_dir, "yates_CT.csv"))
+colnames(YatesCT) <- c("Feathering", "a", "b", "c", "d", "Equation")
+YatesCT <- YatesCT %>% mutate(across(c(Feathering, a, b, c, d), as.numeric))
+
+# --- Helper functions ---
+
+
+# --- Discrete MATLAB-style binning for Ct ---
+
+
+# --- Vectorized Ct calculation with MATLAB binning ---
+
+# --- Thrust power calculation ---
+#density <- 1025
+
+
+```
+  
+
+  2b. simulate Metabolic thrust cost (J/s) using the thrust power and monte carlo simulations around literature values for       metabolic efficiency and propulsive efficiency
+
+```{r}
+YatesUProp <- read.csv(file.path(rds_dir, "yates_uprop.csv"))
+colnames(YatesUProp) <- c("Feathering", "a", "b", "c", "d", "Equation")
+YatesUProp <- YatesUProp %>% mutate(across(c(Feathering, a, b, c, d), as.numeric))
+
+
+
+# u_prop: derived empirically from Yates (1983) lookup tables
+# values consistent with Potvin et al. 2021 (0.7-0.8)
+# already computed in calc_u_prop_vectorized - no change needed
+
+# u_met: fixed at 0.25 following Potvin et al. 2021
+# "4 Joules of muscle chemical energy to generate 1 Joule of mechanical work"
+# sensitivity analysis across 0.1-0.4 (Gough et al. 2025) reported in supplement
+
+
+
+```
+
+
+  2d. simulate mother and calf pairs of varying realistic lengths, masses, and ages using the van Aswegen et al. growth models (age-specific growth costs) and simulate BMR 
+
+    d1. making calf age length mass traces properly
+    "uncertainty in morphometric scaling was propagated via lower and upper parameter envelopes, while primary analyses used       mean   estimates"
+```{r}
+
+
+
+
+
+ages <- 1:110
+mothers <- seq(10, 15, by = 0.1)
+
+grid <- expand.grid(
+  Age = ages,
+  ML = mothers
+)
+
+#for just mean!! could use 95 and 5% CI's later 
+calf_mass_table <- grid %>%
+  dplyr::mutate(
+    
+    # relative length (mean only)
+    Calf_RL = 0.737106 - (0.737106 - 0.3504304) * exp(-0.006740519 * Age),
+    
+    # total length
+    Calf_TL = Calf_RL * ML,
+    
+    # body volume
+    BV = exp(-3.991 + 2.881 * log(Calf_TL)),
+    
+    # tissue masses (mean only)
+    Musc_Mass = BV * (exp(1.934 + 0.657 * log(Calf_TL)) / 100) * 972.6259,
+    Bone_Mass = BV * (exp(4.441 - 0.705 * log(Calf_TL)) / 100) * 1123.534,
+    Visc_Mass = BV * (exp(3.276 - 0.369 * log(Calf_TL)) / 100) * 953.707,
+    Blood_Mass = BV * 0.06 * 1048.657,
+    
+    Blubber_Mass =
+      (BV -
+         Musc_Mass / 972.6259 -
+         Bone_Mass / 1123.534 -
+         Visc_Mass / 953.707 -
+         Blood_Mass / 1048.657
+      ) * 986,
+    
+    # total mass (kg)
+    Mass_kg =
+      Musc_Mass +
+      Bone_Mass +
+      Visc_Mass +
+      Blubber_Mass +
+      Blood_Mass
+  )
+
+# full version - keep all tissue columns for growth cost calculation
+calf_mass_table_full <- calf_mass_table  # save before selecting
+
+calf_mass_table <- calf_mass_table %>%
+  dplyr::select(Age, Calf_TL, ML, Mass_kg)
+```
+  
+  
+    d2. make mother masses based on length from the van Aswegen et al. body-mass model (age-specific growth costs)
+```{r}
+
+mothers <- seq(10, 15, by = 0.1)
+
+mother_table <- data.frame(
+  MotherLength = mothers
+) %>%
+  dplyr::mutate(
+    MotherMass_kg = predict_mother_mass(MotherLength)
+  )
+
+```
+  
+    d3. combine mother calf pairs and add kleiber bmr
+```{r}
+colnames(calf_mass_table)[colnames(calf_mass_table) == "ML"] <- "MotherLength"
+full_table <- calf_mass_table %>%
+  dplyr::left_join(mother_table, by = "MotherLength")
+
+#full_table <- full_table %>%
+ # dplyr::mutate(
+  #  Calf_BMR_W = 0.04843 * 70 * (Mass_kg^0.75),
+  #  Mother_BMR_W = 0.04843 * 70 * (MotherMass_kg^0.75)
+ # )
+
+#full_table <- full_table %>%
+  #dplyr::mutate(
+   # Calf_BMR_MJ_day = Calf_BMR_W * 86400 / 1e6,
+   # Mother_BMR_MJ_day = Mother_BMR_W * 86400 / 1e6
+ # )
+```
+  
+
+
+
+  2e. simulate these mothers and calves in different proportions of behaviors to get variations of daily energy expenditure 
+  The key methodological point is that within each of the n=500 iterations, locomotion, BMR, and HIF are all sampled simultaneously from their respective uncertainty distributions and then summed - so the output CI reflects their joint uncertainty correctly. Growth costs are the one component added as summarized values post-hoc, which is honest to state explicitly: their uncertainty is propagated separately from the van Aswegen et al. published growth models (age-specific growth costs) and combined additively at the summary level. 
+  
+big simulation of BMR, HIF and movement costs
+```{r}
+
+# check where area goes negative on average
+test_lengths <- seq(min(full_table$Calf_TL), max(full_table$Calf_TL), by = 0.1)
+
+mean_area <- sapply(test_lengths, function(bl) {
+  mean(predict_area(bl, n = 200))
+})
+
+min_safe_length <- min(test_lengths[mean_area > 0])
+cat("Minimum safe calf length:", min_safe_length, "\n")
+
+# then filter
+full_table <- full_table %>%
+  filter(Calf_TL >= min_safe_length)
+
+behavior_grid <- seq(0.2, 0.8, by = 0.1)
+
+p_rest <- behavior_grid
+p_active <- 1 - p_rest
+
+```
+
+actually run simulation
+```{r}
+results <- list()
+
+library(furrr)
+library(future)
+
+plan(multisession, workers = parallel::detectCores() - 3)
+
+results <- future_map_dfr(behavior_grid, function(p) {
+  
+  purrr::map_dfr(1:nrow(full_table), function(i) {
+    simulate_daily_energy(
+      full_table[i, ],
+      p_rest          = p,
+      n               = 200,
+      yatesCT         = YatesCT,
+      yatesUProp      = YatesUProp,
+      calf_propstroke = calf_propstroke,
+      mom_propstroke  = mom_propstroke
+    )
+  })
+  
+}, .options = furrr_options(
+  seed = TRUE,
+  globals = c(
+    "full_table", "YatesCT", "YatesUProp",
+    "calf_propstroke", "mom_propstroke",
+    "simulate_daily_energy",
+    "predict_chord", "predict_area", "predict_frequency",
+    "predict_speed", "predict_speed_calf", "predict_speed_mom",   # <- add these
+    "predict_stroke_rate", "predict_stroke_calf", "predict_stroke_mom",  # <- and these if used
+    "predict_prop_fluking", "predict_prop_fluking_calf",
+    "calc_metabolic_power_full", "calc_thrust_power_full",
+    "calc_Ct_vectorized", "calc_u_prop_vectorized",
+    "get_ct_coeffs", "get_uprop_coeffs",
+    "draw_coefs", "draw_lmer_coefs", "get_resid_sigma",
+    "fixed_effects_table", "vcov_list", "models", "model_sigmas"
+  )
+))
+
+
+```
+
+model checks
+```{r}
+# test on a single row to check CI stability across n
+test_row <- full_table[50, ]
+
+ns <- c(50, 100, 200, 500, 1000)
+
+convergence_check <- purrr::map_dfr(ns, function(n) {
+  res <- simulate_daily_energy(
+    test_row, p_rest = 0.5, n = n,
+    yatesCT = YatesCT, yatesUProp = YatesUProp,
+    calf_propstroke = calf_propstroke,
+    mom_propstroke  = mom_propstroke
+  )
+  res$n <- n
+  res
+})
+
+convergence_check %>%
+  dplyr::select(n, calf_total_mean, calf_total_lwr, calf_total_upr,
+                  mom_total_mean,  mom_total_lwr,  mom_total_upr)
+
+# run one row and inspect components separately
+test <- simulate_daily_energy(
+  full_table[50, ], p_rest = 0.5, n = 200,
+  yatesCT = YatesCT, yatesUProp = YatesUProp,
+  calf_propstroke = calf_propstroke,
+  mom_propstroke  = mom_propstroke
+)
+
+# look at components separately
+test %>% dplyr::select(
+  mom_BMR_mean, mom_loco_mean, mom_total_mean,
+  calf_BMR_mean, calf_HIF_mean, calf_loco_mean, calf_total_mean
+)
+
+U     <- 1.5    # m/s
+f     <- 0.21   # Hz - more realistic for large humpback
+BL    <- 11     # m
+chord <- 0.9    # m - check against your chord model prediction
+area  <- 2.5    # m2 - check against your area model prediction
+
+# first verify what your empirical models actually predict for an 11m whale
+cat("predicted chord:", mean(predict_chord(11, n = 200)), "\n")
+cat("predicted area:",  mean(predict_area(11,  n = 200)), "\n")
+cat("predicted freq:",  mean(predict_frequency(11, n = 200)), "\n")
+
+# then run the power chain with realistic inputs
+h <- 0.1 * BL
+
+PT <- calc_thrust_power_full(
+  U = rep(U, 100), f = rep(f, 100),
+  body_length = BL, chord = rep(chord, 100),
+  area = rep(area, 100), yatesCT = YatesCT
+)
+cat("PT mean (W):", mean(PT), "\n")
+
+u_prop <- calc_u_prop_vectorized(
+  U = rep(U, 100), f = rep(f, 100),
+  body_length = BL, chord = rep(chord, 100),
+  yatesUProp = YatesUProp
+)
+cat("u_prop mean:", mean(u_prop), "\n")
+
+Pmet <- PT / (0.25 * u_prop)
+cat("Pmet mean (W):", mean(Pmet), "\n")
+cat("Pmet per hour (MJ):", mean(Pmet) * 3600 / 1e6, "\n")
+cat("Pmet per day (MJ):", mean(Pmet) * 86400 / 1e6, "\n")
+
+cat("prop fluke rest mom:",  mean(predict_prop_fluking(mom_propstroke, "rest",  200)), "\n")
+cat("prop fluke other mom:", mean(predict_prop_fluking(mom_propstroke, "other", 200)), "\n")
+```
+
+save data
+```{r}
+# save all key objects in one go
+# save as csv
+write.csv(results,
+          file.path(rds_dir, "simulation_results.csv"),
+          row.names = FALSE)
+
+# also save as rds (faster to reload, preserves data types exactly)
+saveRDS(results,
+        file.path(rds_dir, "simulation_results.rds"))
+saveRDS(full_table,        file.path(rds_dir, "full_table.rds"))
+```
+
+
+
+

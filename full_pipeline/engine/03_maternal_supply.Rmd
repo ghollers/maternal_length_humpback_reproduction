@@ -1,0 +1,414 @@
+---
+title: "03 - Maternal energy supply (lactation cost)"
+output: html_document
+---
+
+<!-- Body-volume-loss (Model 1/2) functions, lactation_estimates, and the mass-specific lactation-cost figure (manuscript Fig 1). Saves lactation_estimates.rds. -->
+
+> **Module of the maternal-energetics analysis.** Body-volume-loss (Model 1/2) functions, lactation_estimates, and the mass-specific lactation-cost figure (manuscript Fig 1). Saves lactation_estimates.rds.  
+> Run modules in order (00, 01, 02, 03, 05, 06); each assumes the previous ones have run (objects/functions in the environment) or loads the provided derived data from `data/` via module 00.
+
+3. Maternal energy transfer versus calf energy requirements
+
+```{r paths, include=FALSE}
+proj_dir <- if (requireNamespace("here", quietly = TRUE)) here::here() else getwd()  # package root (folder containing R/ and data/)
+rds_dir  <- file.path(proj_dir, "data", "processed")   # reviewer_package processed data
+out_dir  <- file.path(proj_dir, "data", "processed")
+dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
+knitr::opts_knit$set(root.dir = proj_dir)
+source(file.path(proj_dir, "full_pipeline", "engine", "energetics_functions.R"))
+```
+
+
+  3b. energy loss via the van Aswegen et al. body-volume-loss models (maternal investment; updated)
+
+  Maternal daily body-volume loss (van Aswegen et al. 2025a).
+  Each female's daily loss rate (her body-volume ~ day-of-year slope, from
+  repeated within-season measurements) is regressed on maternal total length:
+    BV_Slope ~ TL  ->  E[daily loss | TL] = 0.056197 - 0.012621 * TL  (HI only)
+  Per Monte Carlo draw we sample the regression coefficient uncertainty
+  (intercept/slope SEs) and add among-individual variation from the regression
+  residual SD (0.008191). Model summary below.
+
+linear model on the slope of the body volume change per day for mothers across lengths:
+
+Call:
+lm(formula = BV_Slope ~ TL * Region, data = repeats)
+
+Residuals:
+       Min         1Q     Median         3Q        Max 
+-0.0271250 -0.0050062  0.0001685  0.0053220  0.0209050 
+
+Coefficients:
+             Estimate Std. Error t value Pr(>|t|)    
+(Intercept)  0.056197   0.014901   3.771 0.000245 ***
+TL          -0.012621   0.001159 -10.891  < 2e-16 ***
+RegionAK     0.061407   0.036629   1.676 0.096030 .  
+TL:RegionAK  0.004861   0.002801   1.735 0.085007 .  
+---
+Signif. codes:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
+
+Residual standard error: 0.008191 on 131 degrees of freedom
+Multiple R-squared:  0.9662,	Adjusted R-squared:  0.9654 
+F-statistic:  1247 on 3 and 131 DF,  p-value: < 2.2e-16
+```{r}
+# Loss functions live in energetics_functions.R:
+#   predict_daily_bv_loss()      - daily BV loss (m3/day): regression coeff SEs + residual SD (0.008191)
+#   predict_mother_energy_loss() - converts BV loss to energy (blubber & energy density)
+
+
+# verify: expected daily loss for focal lengths (m3/day, should be negative)
+# 10m: 0.056197 - 0.012621*10 = -0.070; 12m: -0.095; 14m: -0.121
+test_rates <- sapply(c(10, 12, 14), function(L)
+  mean(predict_daily_bv_loss(L, n = 500)))
+cat("Mean daily BV loss (m3/day) at 10, 12, 14 m:", round(test_rates, 3), "\n")
+
+# verify total energy tank over 100-day stay
+test_energy <- predict_mother_energy_loss(seq(10, 15, by = 0.5), n = 500)
+print(test_energy)
+
+mother_lengths <- seq(10, 15, by = 0.1)
+mother_bc_loss <- predict_mother_energy_loss(mother_lengths, n = 500)
+```
+Christiansen 2022 baleen whale blubber energy density uncertainty
+```{r}
+#WITH ERROR AROUND ENERGY DENSITY###########
+# draw energy density ONCE and pass it in
+set.seed(42)
+n <- 5000
+lipid_pct   <- pmin(pmax(rnorm(n, 62.6, 14.8), 19.2), 81.3)
+protein_pct <- pmin(pmax(23.0 - 0.212 * lipid_pct, 3.5), 20.4)
+E_blubber_shared <- (lipid_pct / 100 * 39539) + (protein_pct / 100 * 23640)
+
+# updated function that accepts pre-drawn energy density
+
+mother_lengths  <- unique(results$MotherLength)
+mother_bc_loss  <- predict_mother_energy_loss_v2(
+  mother_lengths, E_blubber_shared, n = n
+)
+
+# --- decompose uncertainty sources for a 14 m mother ---
+set.seed(123)
+n <- 5000
+L <- 14
+
+# volume loss draws only (fix E_blubber at mean)
+bv_loss_draws <- predict_daily_bv_loss(L, n)
+daily_fixed_E <- (abs(bv_loss_draws) * 986 * 26755) / 1000
+cat("Uncertainty from volume loss rate only:\n")
+cat("  mean:", round(mean(daily_fixed_E)),
+    "2.5%:", round(quantile(daily_fixed_E, 0.025)),
+    "97.5%:", round(quantile(daily_fixed_E, 0.975)), "MJ/day\n\n")
+
+# energy density draws only (fix BV loss at mean for 14 m)
+mean_bv_loss <- abs(0.056197 - 0.012621 * 14)  # ~ 0.1205 m3/day
+lipid_pct    <- pmin(pmax(rnorm(n, 62.6, 14.8), 19.2), 81.3)
+protein_pct  <- pmin(pmax(23.0 - 0.212 * lipid_pct, 3.5), 20.4)
+E_draws      <- (lipid_pct / 100 * 39539) + (protein_pct / 100 * 23640)
+daily_fixed_BV <- (mean_bv_loss * 986 * E_draws) / 1000
+cat("Uncertainty from energy density only:\n")
+cat("  mean:", round(mean(daily_fixed_BV)),
+    "2.5%:", round(quantile(daily_fixed_BV, 0.025)),
+    "97.5%:", round(quantile(daily_fixed_BV, 0.975)), "MJ/day\n\n")
+
+# both combined
+lipid_pct2   <- pmin(pmax(rnorm(n, 62.6, 14.8), 19.2), 81.3)
+protein_pct2 <- pmin(pmax(23.0 - 0.212 * lipid_pct2, 3.5), 20.4)
+E_draws2     <- (lipid_pct2 / 100 * 39539) + (protein_pct2 / 100 * 23640)
+daily_both   <- (abs(bv_loss_draws) * 986 * E_draws2) / 1000
+cat("Combined uncertainty:\n")
+cat("  mean:", round(mean(daily_both)),
+    "2.5%:", round(quantile(daily_both, 0.025)),
+    "97.5%:", round(quantile(daily_both, 0.975)), "MJ/day\n")
+```
+
+
+  3c. maternal energy transfer (loss-expenditure)
+```{r}
+# --- predict BC-based energy loss for all mother lengths in results ---
+mother_lengths <- unique(results$MotherLength)
+
+mother_bc_loss <- predict_mother_energy_loss(mother_lengths, n = 500)
+
+# --- join to simulation results and estimate lactation cost ---
+# note: results has multiple rows per MotherLength (varying p_rest and calf age)
+# BC loss is independent of those - it's the observed total loss from the animal
+
+lactation_estimates <- results %>%
+  left_join(mother_bc_loss, by = "MotherLength") %>%
+  mutate(
+    
+    # --- point estimate ---
+    # lactation = total observed BC loss - (loco + BMR)
+    lactation_mean = energy_loss_mean_MJ - mom_total_mean,
+    
+    # --- uncertainty ---
+    # BC loss uncertainty and simulation uncertainty are independent
+    # so variances add: SD_combined = sqrt(SD_bc^2 + SD_sim^2)
+    # approximate simulation SD from CI assuming normality: SD ~ (upr - lwr) / (2 * 1.96)
+    sd_bc  = (energy_loss_upr_MJ - energy_loss_lwr_MJ) / (2 * 1.96),
+    sd_sim = (mom_total_upr - mom_total_lwr)            / (2 * 1.96),
+    sd_lac = sqrt(sd_bc^2 + sd_sim^2),
+    
+    lactation_lwr = lactation_mean - 1.96 * sd_lac,
+    lactation_upr = lactation_mean + 1.96 * sd_lac
+    
+  ) %>%
+  dplyr::select(-sd_bc, -sd_sim, -sd_lac)
+
+lactation_estimates %>%
+  filter(lactation_mean > 0) %>%
+  dplyr::select(MotherLength, p_rest, mom_total_mean, 
+                energy_loss_mean_MJ, lactation_mean) %>%
+  summary()
+
+# show how lactation cost estimate varies with assumed behavioral budget
+#lactation_estimates %>%
+ # group_by(MotherLength, p_rest) %>%
+ # summarize(
+  #  lactation_mean = mean(lactation_mean),
+   # lactation_lwr  = mean(lactation_lwr),
+   # lactation_upr  = mean(lactation_upr),
+  #  .groups = "drop"
+ # ) %>%
+ # ggplot(aes(x = p_rest, y = lactation_mean, 
+ #            color = MotherLength, group = MotherLength)) +
+ # geom_line() +
+ # geom_ribbon(aes(ymin = lactation_lwr, ymax = lactation_upr,
+  #                fill = MotherLength), alpha = 0.2, color = NA) +
+  #labs(x = "Proportion of day resting",
+   #    y = "Estimated lactation cost (MJ/day)",
+   #    title = "Implied lactation cost by behavioral budget and maternal size") +
+ # theme_classic()
+
+# check how often lower CI goes negative
+lactation_estimates %>%
+  filter(p_rest == 0.4) %>%
+  summarise(
+    n_negative_lwr = sum(lactation_lwr < 0),
+    pct_negative   = mean(lactation_lwr < 0) * 100,
+    min_lwr        = min(lactation_lwr),
+    .by = MotherLength
+  ) %>%
+  arrange(MotherLength)
+
+write.csv(lactation_estimates, 
+          file.path(out_dir, "lactation_estimates.csv"), 
+          row.names = FALSE)
+saveRDS(lactation_estimates, file.path(rds_dir, "lactation_estimates.rds"))
+```
+  
+
+```{r}
+library(ggplot2)
+library(dplyr)
+
+
+# --- trend line: p_rest = 0.4 (empirical mean) ---
+lactation_summary <- lactation_estimates %>%
+  filter(p_rest == 0.4, Age == 50) %>%
+  mutate(
+    MotherMass_kg = predict_mother_mass(MotherLength),
+    pct_to_calf   = (lactation_mean / energy_loss_mean_MJ) * 100,
+    lac_per_kg    = lactation_mean / MotherMass_kg
+  )
+
+# --- sensitivity band: range across all simulated p_rest values (0.2-0.8) ---
+lac_band <- lactation_estimates %>%
+  filter(Age == 50) %>%
+  mutate(
+    MotherMass_kg = predict_mother_mass(MotherLength),
+    pct_to_calf   = (lactation_mean / energy_loss_mean_MJ) * 100,
+    lac_per_kg    = lactation_mean / MotherMass_kg
+  ) %>%
+  group_by(MotherLength) %>%
+  summarise(
+    pct_min = min(pct_to_calf),
+    pct_max = max(pct_to_calf),
+    kg_min  = min(lac_per_kg),
+    kg_max  = max(lac_per_kg),
+    .groups = "drop"
+  )
+
+cat("pct_to_calf range (p_rest=0.4):", range(lactation_summary$pct_to_calf),  "\n")
+cat("lac_per_kg range  (p_rest=0.4):", range(lactation_summary$lac_per_kg),   "\n")
+cat("p_rest band width (pct):", round(mean(lac_band$pct_max - lac_band$pct_min), 1), "percentage points\n")
+
+# Build the band symmetrically around the p_rest=0.4 trend to avoid
+# off-centering from MC noise (n=200/row). Half-width = half the total
+# p_rest range, smoothed with loess to remove residual MC noise.
+
+lac_band <- lac_band %>%
+  left_join(
+    lactation_summary %>% dplyr::select(MotherLength, pct_to_calf, lac_per_kg),
+    by = "MotherLength"
+  ) %>%
+  mutate(
+    pct_center    = smooth_vec(MotherLength, pct_to_calf),
+    kg_center     = smooth_vec(MotherLength, lac_per_kg),
+    pct_halfwidth = smooth_vec(MotherLength, (pct_max - pct_min) / 2),
+    kg_halfwidth  = smooth_vec(MotherLength, (kg_max  - kg_min)  / 2),
+    pct_min = pct_center - pct_halfwidth,
+    pct_max = pct_center + pct_halfwidth,
+    kg_min  = kg_center  - kg_halfwidth,
+    kg_max  = kg_center  + kg_halfwidth
+  )
+```
+
+old
+```{r}
+# Okabe-Ito colorblind-safe palette
+blue_color <- "#0072B2"   # blue
+red_color  <- "#D55E00"   # vermillion
+
+y_left_min  <- 35;  y_left_max  <- 70
+y_right_min <- 0.02; y_right_max <- 0.12   # was 0.10
+scale_factor <- (y_left_max - y_left_min) / (y_right_max - y_right_min)
+offset       <- y_left_min - y_right_min * scale_factor
+
+fig3 <- ggplot(lactation_summary, aes(x = MotherLength)) +
+  # --- p_rest sensitivity band: % of daily loss ---
+  geom_ribbon(
+    data = lac_band,
+    aes(x = MotherLength, ymin = pct_min, ymax = pct_max),
+    fill = blue_color, alpha = 0.15, inherit.aes = FALSE
+  ) +
+  # --- p_rest sensitivity band: mass-specific cost ---
+  geom_ribbon(
+    data = lac_band,
+    aes(x = MotherLength, ymin = to_left(kg_min), ymax = to_left(kg_max)),
+    fill = red_color, alpha = 0.15, inherit.aes = FALSE
+  ) +
+  # --- % of daily loss to calf (p_rest = 0.4 trend) ---
+  geom_smooth(
+    aes(y = pct_to_calf, color = "% of total daily energy loss to calf"),
+    method = "loess", span = 0.5, se = FALSE,
+    linewidth = 1.1
+  ) +
+  # --- mass-specific lactation cost (p_rest = 0.4 trend) ---
+  geom_smooth(
+    aes(y = to_left(lac_per_kg), color = "Mass-specific lactation cost"),
+    method = "loess", span = 0.5, se = FALSE,
+    linewidth = 1.1, linetype = "dashed"
+  ) +
+  scale_y_continuous(
+    name   = "% of total daily energy loss to calf",
+    sec.axis = sec_axis(
+      ~ to_right(.),
+      name   = expression("Mass-specific lactation cost (MJ day"^{-1}*" kg"^{-1}*")"),
+      breaks = seq(y_right_min, y_right_max, by = 0.02)
+    )
+  ) +
+  scale_color_manual(
+    name   = NULL,
+    values = c(
+      "% of total daily energy loss to calf" = blue_color,
+      "Mass-specific lactation cost"          = red_color
+    )
+  ) +
+  scale_x_continuous(
+    name   = "Maternal length (m)",
+    breaks = seq(10, 15, by = 1),
+    expand = expansion(mult = c(0.02, 0.02))
+  ) +
+  coord_cartesian(ylim = c(y_left_min, y_left_max)) +
+  theme_classic(base_size = 13) +
+  theme(
+    plot.title           = element_text(size = 13, face = "plain", hjust = 0,
+                                        margin = margin(b = 10)),
+    legend.position      = "top",
+    legend.text          = element_text(size = 10),
+    axis.title           = element_text(size = 12),
+    axis.text            = element_text(size = 10),
+    axis.title.y.left    = element_text(color = blue_color, size = 12),
+    axis.text.y.left     = element_text(color = blue_color),
+    axis.title.y.right   = element_text(color = red_color, size = 12),
+    axis.text.y.right    = element_text(color = red_color),
+    panel.grid.major.y   = element_line(color = "grey92", linewidth = 0.4),
+    plot.margin          = margin(10, 10, 10, 10)
+  )
+
+fig3
+
+#ggsave(
+ # "fig3_lactation_scaling.png",
+#  plot   = fig3,
+ # width  = 7,
+#  height = 5,
+ # units  = "in",
+ # dpi    = 300
+#)
+```
+
+
+```{r}
+fig3
+ggsave(file.path(out_dir, "fig3_lactation_scaling.png"),        fig3,          width = 7, height = 5, units = "in", dpi = 300)
+```
+
+```{r}
+p_rest_show <- c(0.2, 0.4, 0.8)
+
+lac_lines <- lactation_estimates %>%
+  filter(Age == 50, p_rest %in% p_rest_show) %>%
+  mutate(
+    MotherMass_kg = predict_mother_mass(MotherLength),
+    pct_to_calf   = (lactation_mean / energy_loss_mean_MJ) * 100,
+    lac_per_kg    = lactation_mean / MotherMass_kg
+  ) %>%
+  group_by(p_rest) %>% arrange(MotherLength) %>%
+  mutate(pct_s = smooth_vec(MotherLength, pct_to_calf),
+         kg_s  = smooth_vec(MotherLength, lac_per_kg)) %>%
+  ungroup()
+
+lines_long <- bind_rows(
+  lac_lines %>% transmute(MotherLength, p_rest,
+                          outcome = "% of total daily energy loss to calf", y = pct_s),
+  lac_lines %>% transmute(MotherLength, p_rest,
+                          outcome = "Mass-specific lactation cost",          y = to_left(kg_s))
+) %>%
+  mutate(emph = p_rest == 0.4)          # emphasize the empirical mean
+
+line_ends <- lines_long %>% group_by(outcome, p_rest) %>%
+  slice_max(MotherLength, n = 1) %>% ungroup()
+
+fig3 <- ggplot(lines_long,
+               aes(x = MotherLength, y = y,
+                   group = interaction(outcome, p_rest), color = outcome)) +
+  geom_line(aes(linetype = emph, linewidth = emph)) +
+  geom_text(data = line_ends, aes(label = sprintf("%.1f", p_rest)),
+            hjust = 0, nudge_x = 0.07, size = 3, show.legend = FALSE) +
+  scale_linetype_manual(values = c(`FALSE` = "dashed", `TRUE` = "solid"), guide = "none") +
+  scale_linewidth_manual(values = c(`FALSE` = 0.7, `TRUE` = 1.5), guide = "none") +
+  scale_color_manual(name = NULL,
+    values = c("% of total daily energy loss to calf" = blue_color,
+               "Mass-specific lactation cost"          = red_color)) +
+  scale_y_continuous(
+    name = "% of total daily energy loss to calf",
+    sec.axis = sec_axis(~ to_right(.),
+      name   = expression("Mass-specific lactation cost (MJ day"^{-1}*" kg"^{-1}*")"),
+      breaks = seq(y_right_min, y_right_max, by = 0.02))) +
+  scale_x_continuous(name = "Maternal length (m)",
+    breaks = seq(10, 15, by = 1),
+    expand = expansion(mult = c(0.02, 0.10))) +
+  coord_cartesian(ylim = c(y_left_min, y_left_max)) +
+  labs(caption = "Solid = empirical resting proportion (p_rest = 0.4); dashed = p_rest 0.2 and 0.8. Labels give p_rest.") +
+  theme_classic(base_size = 13) +
+  theme(
+    legend.position    = "top",
+    legend.text        = element_text(size = 10),
+    axis.title.y.left  = element_text(color = blue_color, size = 12),
+    axis.text.y.left   = element_text(color = blue_color),
+    axis.title.y.right = element_text(color = red_color,  size = 12),
+    axis.text.y.right  = element_text(color = red_color),
+    panel.grid.major.y = element_line(color = "grey92", linewidth = 0.4),
+    plot.margin        = margin(10, 10, 10, 10)
+  )
+fig3
+```
+```{r}
+ggsave(file.path(out_dir, "fig3_lactation_scaling2.png"),        fig3,          width = 7, height = 5, units = "in", dpi = 300)
+```
+
+
+
