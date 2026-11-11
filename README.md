@@ -1,7 +1,6 @@
 # reproducibility package
 
-Streamlined data and code to reproduce the main figures of the manuscript on
-maternal body length and the energetics of reproduction in humpback whales. Each
+Streamlined data and code to reproduce the main figures of the manuscript "Declining structural body size as a reproductive constraint in baleen whales". Each
 main figure has its own folder with a single, self-contained script. No raw
 biologging data is required: figures reproduce from processed data, and the
 model-fitting step reproduces from anonymized per-animal summaries.
