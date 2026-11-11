@@ -1,4 +1,4 @@
-# Reviewer reproducibility package
+# reproducibility package
 
 Streamlined data and code to reproduce the main figures of the manuscript on
 maternal body length and the energetics of reproduction in humpback whales. Each
